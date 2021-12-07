@@ -16,5 +16,4 @@ RTC-9juil-27nov/
 .vscode/
 build/
 main
-*.a
 data/
