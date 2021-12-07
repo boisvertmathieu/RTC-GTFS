@@ -15,5 +15,5 @@ RTC-9juil-27nov/
 .idea/
 .vscode/
 build/
-
+main
 *.a
