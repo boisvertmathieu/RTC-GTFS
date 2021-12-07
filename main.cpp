@@ -1,25 +1,26 @@
 //
 // Produced by Mario on Dec 2016.
-// Update by Mathieu Boisver on 2021-12-07
 //
 
 #include <iostream>
+#include <ctime>
 
 #include "DonneesGTFS.h"
+#include "ReseauGTFS.h"
 
 using namespace std;
 
 int main()
 {
-
-    const std::string chemin_dossier = "data";
-
+    const std::string chemin_dossier = "RTC-9juil-27nov";
     Date today(2020, 9, 25);
     Heure now1(7, 30, 0);
 //    Date today; //Le constructeur par défaut initialise la date à aujourd'hui
 //    Heure now1; //Le constructeur par défaut initialise l'heure à maintenant
-    Heure now2 = now1.add_secondes(3600);
 
+    Heure now2 = now1.add_secondes(72000); //on désire obtenir tous les arrêts du reste de la journée
+
+    clock_t begin = clock();
     DonneesGTFS donnees_rtc(today, now1, now2);
 
     donnees_rtc.ajouterLignes(chemin_dossier + "/routes.txt");
@@ -27,21 +28,85 @@ int main()
     donnees_rtc.ajouterStations(chemin_dossier + "/stops.txt");
     cout << "Nombre de stations initiales = " << donnees_rtc.getNbStations() << endl;
     donnees_rtc.ajouterServices(chemin_dossier + "/calendar_dates.txt");
-    cout << "Nombre de services = " << donnees_rtc.getNbServices() << endl;
+    size_t nb_services = donnees_rtc.getNbServices();
+    cout << "Nombre de services = " << nb_services << endl;
+    if (nb_services==0) throw logic_error("main(): On doit avoir nb_services > 0 pour continuer");
     donnees_rtc.ajouterVoyagesDeLaDate(chemin_dossier + "/trips.txt");
     donnees_rtc.ajouterArretsDesVoyagesDeLaDate(chemin_dossier + "/stop_times.txt");
-    cout << "Nombre de stations ayant au moins 1 arret = " << donnees_rtc.getNbStations() << endl;
     donnees_rtc.ajouterTransferts(chemin_dossier + "/transfers.txt");
+
+    clock_t end = clock();
+    cout << "Chargement des données effectué en " << double(end - begin) / CLOCKS_PER_SEC << " secondes" << endl;
+
+    cout << "Nombre de stations ayant au moins 1 arrêt = " << donnees_rtc.getNbStations() << endl;
     cout << "Nombre de transferts = " << donnees_rtc.getNbTransferts() << endl;
     cout << "Nombres de voyages = " << donnees_rtc.getNbVoyages() << endl;
-    cout << "Nombre d'arrets = " << donnees_rtc.getNbArrets() << endl << endl;
+    cout << "Nombre d'arrêts = " << donnees_rtc.getNbArrets() << endl;
 
-    donnees_rtc.afficherLignes();
-    donnees_rtc.afficherStations();
-    donnees_rtc.afficherStationsDeTransfert();
-    donnees_rtc.afficherTransferts();
-    donnees_rtc.afficherArretsParVoyages();
-    donnees_rtc.afficherArretsParStations();
+    begin = clock();
+    ReseauGTFS reseau_rtc(donnees_rtc);
+    end = clock();
+    cout << "Le nombre d'arcs (sans le point origine et destination) est = " << reseau_rtc.getNbArcs() << endl;
+    cout << "Graphe (sans le point origine et destination) a été produit en " << double(end - begin) / CLOCKS_PER_SEC << " secondes" << endl;
+
+    cout << endl;
+    cout << "=============================================" << endl;
+    cout << "                  premier cas                " << endl;
+    cout << "=============================================" << endl;
+    cout << endl;
+
+//    Coordonnees pointOrigine(46.758029, -71.336759); //Int. Chemin ste-Foy et Quatre-Bourgeois
+//    Coordonnees pointDestination(46.829049, -71.248305); //Centre Videotron
+    Coordonnees pointOrigine(46.7962, -71.3139);
+    Coordonnees pointDestination(46.8599, -71.3984);
+
+
+    cout << "Coordonnées GPS du point d'origine: " << pointOrigine << endl;
+    cout << "Coordonnées GPS du point de destination: " << pointDestination << endl;
+    begin = clock();
+    reseau_rtc.ajouterArcsOrigineDestination(donnees_rtc, pointOrigine, pointDestination);
+    end = clock();
+    cout << "Nombre d'arcs ajoutés du point origine vers une station = " << reseau_rtc.getNbArcsOrigineVersStations() << endl;
+    cout << "Nombre d'arcs ajoutés d'une station vers le point destination = " << reseau_rtc.getNbArcsStationsVersDestination() << endl;
+    cout << "Cet ajout au graphe a nécessité un temps d'exécution de " << double(end - begin) / CLOCKS_PER_SEC << " secondes" << endl;
+
+    long tempsExecution(0);
+    reseau_rtc.itineraire(donnees_rtc, true, tempsExecution);
+    cout << endl << "Temps d'exécution de l'algorithme de plus court chemin: " << tempsExecution
+         << " microsecondes" << endl;
+
+    cout << endl;
+    cout << "=============================================" << endl;
+    cout << "                  deuxième cas               " << endl;
+    cout << "=============================================" << endl;
+    cout << endl;
+
+    cout << "Suppression du graphe connecté aux points source et destination" << endl;
+    begin = clock();
+    reseau_rtc.enleverArcsOrigineDestination();
+    end = clock();
+    cout << "Cette suppression a nécessité un temps d'exécution de " << double(end - begin) / CLOCKS_PER_SEC << " secondes" << endl;
+
+//    Coordonnees pointOrigine2(46.829049, -71.248305); //Centre vidéotron
+//    Coordonnees pointDestination2(46.758029, -71.336759); //Int. Chemin ste-Foy et Quatre-Bourgeois
+    Coordonnees pointOrigine2(46.8599, -71.3984);
+    Coordonnees pointDestination2(46.7962, -71.3139);
+
+    cout << "Coordonnées GPS du point d'origine: " << pointOrigine2 << endl;
+    cout << "Coordonnées GPS du point de destination: " << pointDestination2 << endl;
+    begin = clock();
+    reseau_rtc.ajouterArcsOrigineDestination(donnees_rtc, pointOrigine2, pointDestination2);
+    end = clock();
+    cout << "Nombre d'arcs ajoutés du point origine vers une station = " << reseau_rtc.getNbArcsOrigineVersStations() << endl;
+    cout << "Nombre d'arcs ajoutés d'une station vers le point destination = " << reseau_rtc.getNbArcsStationsVersDestination() << endl;
+    cout << "Cet ajout au graphe a nécessité un temps d'exécution de " << double(end - begin) / CLOCKS_PER_SEC << " secondes" << endl;
+
+    long tempsExecution2(0);
+    reseau_rtc.itineraire(donnees_rtc, true, tempsExecution2);
+    cout << endl << "Temps d'exécution de l'algorithme de plus court chemin: " << tempsExecution2
+         << " microsecondes" << endl;
 
     return 0;
 }
+
+

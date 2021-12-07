@@ -1,281 +1,393 @@
 //
-// Created by Mario Marchand on 2016-12-29.
-// Updated by Mathieu Boisvert on 2021-12-07
+// Created by Mathieu Boisvert on 04-11-2021
 //
 
-#include "DonneesGTFS.h"
-#include <fstream>
-#include <algorithm>
+#include <sys/time.h>
+
+#include "ReseauGTFS.h"
 
 using namespace std;
 
-void supprimerStationsSansArrets(map<unsigned int, Station> &stations) {
-    for (auto it = stations.cbegin(); it != stations.cend();) {
-        if (it->second.getArrets().empty()) {
-            it = stations.erase(it);
-        } else {
-            it++;
+unsigned int getPoidsEntre2Coord(const double &vitesseDeMarche, const double &distanceMaxMarche,
+                                 const Coordonnees &coordDepart,
+                                 const Coordonnees &coordArrivee) {
+    return (unsigned int) (((coordDepart - coordArrivee) / vitesseDeMarche) * 3600);
+}
+
+//! \brief Permet de valider qu'une station est présente dans les transferts
+bool isStationPresenteDansTransfert(const Station &station,
+                                    const vector<tuple<unsigned int, unsigned int, unsigned int>> &transferts) {
+    // On vérifie si la station est présente comme from_station_id dans les transferts
+    for (const auto &transfert : transferts) {
+        if (get<0>(transfert) == station.getId()) {
+            return true;
         }
     }
+    return false;
 }
 
-void supprimerVoyageSansArrets(map<string, Voyage> &voyages) {
-    for (auto it = voyages.cbegin(); it != voyages.cend();) {
-        if (it->second.getArrets().empty()) {
-            it = voyages.erase(it);
-        } else {
-            it++;
-        }
-    }
+//! \brief Permet de construire deux arrêt servant de noeud d'origine et de
+//! destination
+tuple<Arret::Ptr, Arret::Ptr> creerArretsOrigineDestination(const unsigned int stationIdOrigine,
+                                                            const unsigned int stationIdDestination,
+                                                            unsigned int nombreArcs) {
+    Arret::Ptr arretOrigine = make_shared<Arret>(
+            stationIdOrigine,
+            Heure(1, 1, 1),
+            Heure(9, 9, 9),
+            0,
+            "voyageIdOrigine"
+    );
+
+    Arret::Ptr arretDestination = make_shared<Arret>(
+            stationIdDestination,
+            Heure(1, 1, 1),
+            Heure(9, 9, 9),
+            0,
+            "voyageIdDestination"
+    );
+
+    return tuple<Arret::Ptr, Arret::Ptr>(arretOrigine, arretDestination);
 }
 
-void supprimerGuillemetsDansString(string &string) {
-    const char unwanted_char = '"';
-    string.erase(remove(string.begin(), string.end(), unwanted_char), string.end());
-}
+//! \brief Permet la récupération des arrêts des stations atteignable depuis le
+//! noeud d'origine (au départ du graphe) \brief et dont le poids est plus petit
+//! ou égale à distanceMaxMarche
+multimap<Arret::Ptr, Coordonnees> getArretsAtteingnableAPiedDepuisOrigine(const Arret::Ptr &arretOrigine,
+                                                                          const Coordonnees &coordArretOrigine,
+                                                                          const double distanceMaxMarche,
+                                                                          const map<unsigned int, Station> &stations,
+                                                                          const map<string, Voyage> &voyages) {
+    multimap<Arret::Ptr, Coordonnees> arretsAtteignable;
 
-Date *construireDateDepuisString(const string &str_date) {
-    int an = stoi(str_date.substr(0, 4));
-    int mois = stoi(str_date.substr(4, 2));
-    int jour = stoi(str_date.substr(6, 2));
+    // On filtre les stations par celles qui sont atteignable à pied
+    for (const auto &itStations : stations) {
+        const Station &station = itStations.second;
 
-    return new Date(an, mois, jour);
-}
+        if ((coordArretOrigine - station.getCoords()) <= distanceMaxMarche) {
+            const multimap<Heure, Arret::Ptr> &arrets = station.getArrets();
+            map<unsigned int, Arret::Ptr> arretsAvecLigneDifferente;
 
-Heure *construireHeureDepuisString(const string &str_heure) {
+            for (const auto &itArrets : arrets) {
+                Arret::Ptr arret = itArrets.second;
 
-    const char delimiter = ':';
-    size_t curr_pos = 0;
-    size_t next_pos = 0;
-    vector<unsigned int> values(3);
-    int index = 0;
-
-    while (next_pos != string::npos && index < values.size()) {
-        next_pos = str_heure.find(delimiter, curr_pos);
-
-        string curr_value = str_heure.substr(curr_pos, next_pos);
-
-        values[index] = stoi(curr_value);
-
-        curr_pos = next_pos + 1;
-        index++;
-    }
-
-    return new Heure(values[0], values[1], values[2]);
-}
-
-
-//! \brief ajoute les lignes dans l'objet GTFS
-//! \param[in] p_nomFichier: le nom du fichier contenant les lignes
-//! \throws logic_error si un problème survient avec la lecture du fichier
-void DonneesGTFS::ajouterLignes(const std::string &p_nomFichier) {
-    ifstream fichier(p_nomFichier);
-    string ligne;
-
-    try {
-        getline(fichier, ligne);
-
-        while (getline(fichier, ligne)) {
-            supprimerGuillemetsDansString(ligne);
-            vector<string> vector = string_to_vector(ligne, ',');
-
-            unsigned int route_id = stoi(vector[0]);
-            const string route_short_name = vector[2];
-            const string description = vector[4];
-
-            CategorieBus categorie = Ligne::couleurToCategorie(vector[7]);
-            Ligne l(route_id, route_short_name, description, categorie);
-
-            m_lignes.insert(make_pair(route_id, l));
-            m_lignes_par_numero.insert(make_pair(route_short_name, l));
-        }
-    } catch (exception &ex) {
-        throw logic_error(ex.what());
-    }
-}
-
-//! \brief ajoute les stations dans l'objet GTFS
-//! \param[in] p_nomFichier: le nom du fichier contenant les station
-//! \throws logic_error si un problème survient avec la lecture du fichier
-void DonneesGTFS::ajouterStations(const std::string &p_nomFichier) {
-
-    ifstream fichier(p_nomFichier);
-    string ligne;
-
-    try {
-        getline(fichier, ligne);
-
-        while (getline(fichier, ligne)) {
-            supprimerGuillemetsDansString(ligne);
-            vector<string> vector = string_to_vector(ligne, ',');
-
-            unsigned int stop_id = stoi(vector[0]);
-            const string station_nom = vector[1];
-            const string station_description = vector[2];
-
-            Coordonnees coordonnees(stod(vector[3]), stod(vector[4]));
-            Station station(stop_id, station_nom, station_description, coordonnees);
-
-            m_stations.insert(make_pair(stop_id, station));
-        }
-    } catch (exception &ex) {
-        throw logic_error(ex.what());
-    }
-}
-
-//! \brief ajoute les transferts dans l'objet GTFS
-//! \breif Cette méthode doit âtre utilisée uniquement après que tous les arrêts ont été ajoutés
-//! \brief les transferts (entre stations) ajoutés sont uniquement ceux pour lesquelles les stations sont prensentes dans l'objet GTFS
-//! \brief les transferts sont ajoutés dans m_transferts
-//! \brief les from_station_id des stations de transfert sont ajoutés dans m_stationsDeTransfert
-//! \param[in] p_nomFichier: le nom du fichier contenant les station
-//! \throws logic_error si un problème survient avec la lecture du fichier
-//! \throws logic_error si tous les arrets de la date et de l'intervalle n'ont pas été ajoutés
-void DonneesGTFS::ajouterTransferts(const std::string &p_nomFichier) {
-
-    ifstream fichier(p_nomFichier);
-    string ligne;
-
-    try {
-        getline(fichier, ligne);
-
-        while (getline(fichier, ligne)) {
-            vector<string> vector = string_to_vector(ligne, ',');
-
-            unsigned int from_station_id = stoi(vector[0]);
-            unsigned int to_station_id = stoi(vector[1]);
-            unsigned int min_transfer_time = stoi(vector[3]);
-
-            if (min_transfer_time == 0) {
-                min_transfer_time = 1;
-            }
-
-            if (m_stations.find(from_station_id) != m_stations.end() &&
-                m_stations.find(to_station_id) != m_stations.end()) {
-                m_transferts.emplace_back(from_station_id, to_station_id, min_transfer_time);
-                m_stationsDeTransfert.insert(from_station_id);
-            }
-        }
-    } catch (exception &ex) {
-        throw logic_error(ex.what());
-    }
-}
-
-//! \brief ajoute les services de la date du GTFS (m_date)
-//! \param[in] p_nomFichier: le nom du fichier contenant les services
-//! \throws logic_error si un problème survient avec la lecture du fichier
-void DonneesGTFS::ajouterServices(const std::string &p_nomFichier) {
-
-    ifstream fichier(p_nomFichier);
-    string ligne;
-
-    try {
-        getline(fichier, ligne);
-
-        while (getline(fichier, ligne)) {
-            vector<string> vector = string_to_vector(ligne, ',');
-
-            const string service_id = vector[0];
-            const string str_date = vector[1];
-            const string exception_type = vector[2];
-
-            if (exception_type == "1") {
-                Date *date = construireDateDepuisString(str_date);
-
-                if (m_date == *date) {
-                    m_services.insert(service_id);
+                unsigned int numLigne = voyages.at(arret->getVoyageId()).getLigne();
+                auto it = arretsAvecLigneDifferente.find(numLigne);
+                if (it != arretsAvecLigneDifferente.end()) {
+                    if (it->second->getHeureArrivee() > arret->getHeureArrivee()) {
+                        it->second = arret;
+                    }
+                } else {
+                    arretsAvecLigneDifferente.insert({numLigne, arret});
                 }
-                delete date;
-            }
-        }
-    } catch (exception &ex) {
-        throw logic_error(ex.what());
-    }
-}
 
-//! \brief ajoute les voyages de la date
-//! \brief seuls les voyages dont le service est présent dans l'objet GTFS sont ajoutés
-//! \param[in] p_nomFichier: le nom du fichier contenant les voyages
-//! \throws logic_error si un problème survient avec la lecture du fichier
-void DonneesGTFS::ajouterVoyagesDeLaDate(const std::string &p_nomFichier) {
-
-    ifstream fichier(p_nomFichier);
-    string ligne;
-
-    try {
-        getline(fichier, ligne);
-
-        while (getline(fichier, ligne)) {
-            supprimerGuillemetsDansString(ligne);
-            vector<string> vector = string_to_vector(ligne, ',');
-
-            const string service_id = vector[1];
-
-            if (m_services.find(service_id) != m_services.end()) {
-                unsigned int route_id = stoi(vector[0]);
-                const string trip_id = vector[2];
-                const string trip_headsign = vector[3];
-
-                Voyage voyage(trip_id, route_id, service_id, trip_headsign);
-                m_voyages.insert(make_pair(trip_id, voyage));
             }
 
+            for (const auto &arret : arretsAvecLigneDifferente) {
+                arretsAtteignable.insert({arret.second, station.getCoords()});
+            }
         }
-    } catch (exception &ex) {
-        throw logic_error(ex.what());
     }
-
+    return arretsAtteignable;
 }
 
-//! \brief ajoute les arrets aux voyages présents dans le GTFS si l'heure du voyage appartient à l'intervalle de temps du GTFS
-//! \brief Un arrêt est ajouté SSI son heure de départ est >= now1 et que son heure d'arrivée est < now2
-//! \brief De plus, on enlève les voyages qui n'ont pas d'arrêts dans l'intervalle de temps du GTFS
-//! \brief De plus, on enlève les stations qui n'ont pas d'arrets dans l'intervalle de temps du GTFS
-//! \param[in] p_nomFichier: le nom du fichier contenant les arrets
-//! \post assigne m_tousLesArretsPresents à true
-//! \throws logic_error si un problème survient avec la lecture du fichier
-void DonneesGTFS::ajouterArretsDesVoyagesDeLaDate(const std::string &p_nomFichier) {
-    ifstream fichier(p_nomFichier);
-    string ligne;
+//! \brief Permet la récupération des arrêts qui sont entre les stations et
+//! l'arrêt destination (à la fin du graphe) \brief et dont le poids est plus
+//! petit ou égale à distanceMaxMarche
+multimap<Arret::Ptr, Coordonnees> getArretsEntreStationsEtDestination(const Arret::Ptr &arretDestination,
+                                                                      const Coordonnees &coordArretDestination,
+                                                                      const double distanceMaxMarche,
+                                                                      const map<unsigned int, Station> &stations) {
+    multimap<Arret::Ptr, Coordonnees> arretsAtteignable;
 
-    try {
-        getline(fichier, ligne);
+    for (const auto &itStations : stations) {
+        const Station &station = itStations.second;
+        if ((coordArretDestination - station.getCoords()) <= distanceMaxMarche) {
+            const multimap<Heure, Arret::Ptr> &arrets = itStations.second.getArrets();
+            for (const auto &itArrets : arrets) {
+                arretsAtteignable.insert({itArrets.second, itStations.second.getCoords()});
+            }
+        }
+    }
 
-        while (getline(fichier, ligne)) {
-            vector<string> vector = string_to_vector(ligne, ',');
+    return arretsAtteignable;
+}
 
-            Heure *heure_arrivee = construireHeureDepuisString(vector[1]);
-            Heure *heure_depart = construireHeureDepuisString(vector[2]);
+//! \brief Permet de récupérer les arcs attente
+multimap<Arret::Ptr, Arret::Ptr> getArcsAttente(const unsigned int delaisMinArcAttente,
+                                                const Station &station,
+                                                const multimap<Heure, Arret::Ptr> &arretsDeLaStation,
+                                                const map<string, Voyage> &voyages) {
+    multimap<Arret::Ptr, Arret::Ptr> arcsAttente;
 
-            if (*heure_depart >= m_now1 && *heure_arrivee < m_now2) {
+    // On boucle sur tous les arrêts
+    for (const auto &itArretFrom: arretsDeLaStation) {
+        Arret::Ptr arretFrom = itArretFrom.second;
+        unsigned int arretFromNumeroLigne = voyages.find(arretFrom->getVoyageId())->second.getLigne();
 
-                const string voyage_id = vector[0];
-                if (m_voyages.find(voyage_id) != m_voyages.end()) {
+        map<unsigned int, Arret::Ptr> arcsPossiblesVersArretTo;
 
-                    unsigned int station_id = stoi(vector[3]);
-                    unsigned int numero_sequence = stoi(vector[4]);
+        auto itArretTo = arretsDeLaStation.lower_bound(itArretFrom.first.add_secondes(delaisMinArcAttente));
+        for (; itArretTo != arretsDeLaStation.end(); itArretTo++) {
+            Arret::Ptr arretTo = itArretTo->second;
+            unsigned int arretToNumeroLigne = voyages.find(arretTo->getVoyageId())->second.getLigne();
 
-                    Arret::Ptr arret = make_shared<Arret>(station_id, *heure_arrivee, *heure_depart, numero_sequence,
-                                                          voyage_id);
-
-                    m_voyages.at(voyage_id).ajouterArret(arret);
-                    m_stations.at(station_id).addArret(arret);
-                    m_nbArrets++;
+            if (arretFromNumeroLigne != arretToNumeroLigne) {
+                auto it = arcsPossiblesVersArretTo.find(arretFromNumeroLigne);
+                if (it != arcsPossiblesVersArretTo.end()) {
+                    if (it->second->getHeureArrivee() > arretTo->getHeureArrivee()) {
+                        it->second = arretTo;
+                    }
+                } else {
+                    arcsPossiblesVersArretTo.insert({arretToNumeroLigne, arretTo});
                 }
             }
-
-            delete heure_arrivee;
-            delete heure_depart;
         }
 
-        supprimerVoyageSansArrets(m_voyages);
-        supprimerStationsSansArrets(m_stations);
+        for (const auto &arret : arcsPossiblesVersArretTo) {
+            arcsAttente.insert({arretFrom, arret.second});
+        }
+    }
+    return arcsAttente;
 
-        m_tousLesArretsPresents = true;
+}
+
+//! \brief Permet de récupérer les arcs de transfert qui sont valide
+map<Arret::Ptr, map<string, Arret::Ptr>> getArcsDeTransferts(const multimap<Heure, Arret::Ptr> &arretsStationFrom,
+                                                             const multimap<Heure, Arret::Ptr> &arretsStationTo,
+                                                             unsigned int minTransferTime,
+                                                             const map<string, Voyage> &voyages,
+                                                             const unordered_map<unsigned int, Ligne> &lignes) {
+    map<Arret::Ptr, map<string, Arret::Ptr>> arcsPossibles;
+
+    //On boucle sur tous les arrêts de la station from_station_id
+    for (const auto &itArretsFrom : arretsStationFrom) {
+        map<string, Arret::Ptr> arretsToPossibles;
+
+        Arret::Ptr arretFrom = itArretsFrom.second;
+        auto itArretsTo = arretsStationTo.lower_bound(
+                arretFrom->getHeureArrivee().add_secondes(minTransferTime));
+
+        // On boucl sur tous les arrês de la station to_station_id
+        for (; itArretsTo != arretsStationTo.end(); itArretsTo++) {
+            Arret::Ptr arretTo = itArretsTo->second;
+
+            const string &fromLigneNumero = lignes.find(
+                    voyages.at(arretFrom->getVoyageId()).getLigne())->second.getNumero();
+            const string &toLigneNumero = lignes.find(
+                    voyages.at(arretTo->getVoyageId()).getLigne())->second.getNumero();
+
+            if (fromLigneNumero != toLigneNumero) {
+                auto it = arretsToPossibles.find(toLigneNumero);
+                if (it != arretsToPossibles.end()) {
+                    if (it->second->getHeureArrivee() > arretTo->getHeureArrivee()) {
+                        it->second = arretFrom;
+                    }
+                } else {
+                    arretsToPossibles.insert({toLigneNumero, arretFrom});
+                }
+            }
+        }
+        arcsPossibles.insert({arretFrom, arretsToPossibles});
+    }
+    return arcsPossibles;
+}
+
+//! \brief ajout des arcs dus aux voyages
+//! \brief insère les arrêts (associés aux sommets) dans m_arretDuSommet et
+//! m_sommetDeArret \throws logic_error si une incohérence est détecté lors de
+//! cette étape de construction du graphe
+void ReseauGTFS::ajouterArcsVoyages(const DonneesGTFS &p_gtfs) {
+    try {
+        size_t idArret = 0;
+        // Boucle sur tous les voyages de getVoyages() de l'objet p_gtfs
+        for (const auto &itVoyages : p_gtfs.getVoyages()) {
+            // On boucle sur tous les arrets de getArrets() de l'objet voyage
+            const auto &arrets = itVoyages.second.getArrets();
+
+            for (const auto &arret : arrets) {
+                m_arretDuSommet.push_back(arret);
+                m_sommetDeArret.insert({arret, idArret});
+
+                if (arret != *arrets.begin()) {
+                    unsigned int poids = arret->getHeureArrivee() - m_arretDuSommet[idArret - 1]->getHeureArrivee();
+                    m_leGraphe.ajouterArc(idArret - 1, idArret, poids);
+                }
+
+                idArret++;
+            }
+        }
+        if (idArret == 0) {
+            throw logic_error("Aucun arrêts a été ajouté.");
+        }
     } catch (exception &ex) {
         throw logic_error(ex.what());
     }
 }
 
 
+//! \brief ajouts des arcs dus aux transferts entre stations
+//! \throws logic_error si une incohérence est détecté lors de cette étape de
+//! construction du graphe
+void ReseauGTFS::ajouterArcsTransferts(const DonneesGTFS &p_gtfs) {
+    try {
+        const vector<tuple<unsigned int, unsigned int, unsigned int>> &transferts = p_gtfs.getTransferts();
+        const map<unsigned int, Station> &stations = p_gtfs.getStations();
+        const map<string, Voyage> &voyages = p_gtfs.getVoyages();
+        const unordered_map<unsigned int, Ligne> &lignes = p_gtfs.getLignes();
 
+        // On boucle sur tous les transferts
+        for (const auto &transfert : transferts) {
+            const unsigned int fromStationId = get<0>(transfert);
+            const unsigned int toStationId = get<1>(transfert);
+            unsigned int minTransferTime = get<2>(transfert);
+
+            const multimap<Heure, Arret::Ptr> &arretsStationFrom = stations.at(fromStationId).getArrets();
+            const multimap<Heure, Arret::Ptr> &arretsStationTo = stations.at(toStationId).getArrets();
+
+            const map<Arret::Ptr, map<string, Arret::Ptr>> arcs = getArcsDeTransferts(
+                    arretsStationFrom, arretsStationTo, minTransferTime, voyages, lignes
+            );
+
+            for (const auto &arretFrom: arcs) {
+                for (const auto &arretTo : arretFrom.second) {
+                    unsigned int poids = arretTo.second->getHeureArrivee() - arretFrom.first->getHeureArrivee();
+                    size_t idArretFrom = m_sommetDeArret[arretFrom.first];
+                    size_t idArretTo = m_sommetDeArret[arretTo.second];
+
+                    m_leGraphe.ajouterArc(idArretFrom, idArretTo, poids);
+                }
+            }
+        }
+    } catch (exception &ex) {
+        throw logic_error(ex.what());
+    }
+}
+
+//! \brief ajouts des arcs d'une station à elle-même pour les stations qui ne
+//! sont pas dans DonneesGTFS::m_stationsDeTransfert \throws logic_error si une
+//! incohérence est détecté lors de cette étape de construction du graphe
+void ReseauGTFS::ajouterArcsAttente(const DonneesGTFS &p_gtfs) {
+    try {
+        const map<unsigned int, Station> &stations = p_gtfs.getStations();
+        const vector<tuple<unsigned int, unsigned int, unsigned int>> &transferts = p_gtfs.getTransferts();
+        const map<string, Voyage> &voyages = p_gtfs.getVoyages();
+
+        for (const auto &itStations : stations) {
+            const Station &station = itStations.second;
+
+            if (!isStationPresenteDansTransfert(station, transferts)) {
+                const multimap<Heure, Arret::Ptr> &arretsDeLaStation = station.getArrets();
+
+                const multimap<Arret::Ptr, Arret::Ptr> arcsAttentes =
+                        getArcsAttente(delaisMinArcsAttente, station, arretsDeLaStation, voyages);
+
+                for (const auto &pair: arcsAttentes) {
+                    unsigned int poids = pair.second->getHeureArrivee() - pair.first->getHeureArrivee();
+                    unsigned int idDepart = m_sommetDeArret[pair.first];
+                    unsigned int idArrive = m_sommetDeArret[pair.second];
+
+                    m_leGraphe.ajouterArc(idDepart, idArrive, poids);
+                }
+            }
+        }
+    } catch (exception &ex) {
+        throw logic_error(ex.what());
+    }
+}
+
+//! \brief ajoute des arcs au réseau GTFS à partir des données GTFS
+//! \brief Il s'agit des arcs allant du point origine vers une station si
+//! celle-ci est accessible à pieds et des arcs allant d'une station vers le
+//! point destination \param[in] p_gtfs: un objet DonneesGTFS \param[in]
+//! p_pointOrigine: les coordonnées GPS du point origine \param[in]
+//! p_pointDestination: les coordonnées GPS du point destination \throws
+//! logic_error si une incohérence est détecté lors de la construction du graphe
+//! \post constuit un réseau GTFS représenté par un graphe orienté pondéré avec
+//! poids non négatifs \post assigne la variable m_origine_dest_ajoute à true
+//! (car les points orignine et destination font parti du graphe) \post insère
+//! dans m_sommetsVersDestination les numéros de sommets connctés au point
+//! destination
+void ReseauGTFS::ajouterArcsOrigineDestination(const DonneesGTFS &p_gtfs, const Coordonnees &p_pointOrigine,
+                                               const Coordonnees &p_pointDestination) {
+    try {
+        tuple<Arret::Ptr, Arret::Ptr> arretsOrigineDestination =
+                creerArretsOrigineDestination(stationIdOrigine, stationIdDestination, getNbArcs());
+        Arret::Ptr arretOrigine = get<0>(arretsOrigineDestination);
+        Arret::Ptr arretDestination = get<1>(arretsOrigineDestination);
+
+        m_sommetOrigine = m_sommetDeArret.size(); // Prochain numéro de sommet disponible
+        m_sommetDeArret.insert({arretOrigine, m_sommetOrigine});
+        m_arretDuSommet.push_back(arretOrigine);
+
+        m_sommetDestination = m_sommetDeArret.size();
+        m_sommetDeArret.insert({arretDestination, m_sommetDestination});
+        m_arretDuSommet.push_back(arretDestination);
+
+        m_leGraphe.resize(m_leGraphe.getNbSommets() + 2);
+
+
+        multimap<Arret::Ptr, Coordonnees> arretsAtteignablesDepuisOrigine = getArretsAtteingnableAPiedDepuisOrigine(
+                arretOrigine, p_pointOrigine, distanceMaxMarche, p_gtfs.getStations(), p_gtfs.getVoyages());
+        m_nbArcsOrigineVersStations = 0;
+        for (const auto &pair: arretsAtteignablesDepuisOrigine) {
+            size_t idArcOrigine = m_sommetOrigine;
+            size_t idArcDestination = m_sommetDeArret[pair.first];
+            Coordonnees coordonneesArret = pair.second;
+            unsigned int poids = getPoidsEntre2Coord(vitesseDeMarche, distanceMaxMarche, p_pointOrigine,
+                                                     coordonneesArret);
+
+            m_leGraphe.ajouterArc(idArcOrigine, idArcDestination, poids);
+            m_nbArcsOrigineVersStations++;
+        }
+
+        multimap<Arret::Ptr, Coordonnees> arretsAtteignableDepuisDestination = getArretsEntreStationsEtDestination(
+                arretDestination, p_pointDestination, distanceMaxMarche, p_gtfs.getStations());
+        for (const auto &pair : arretsAtteignableDepuisDestination) {
+            size_t idArcOrigine = m_sommetDeArret[pair.first];
+            size_t idArcDestination = m_sommetDestination;
+            Coordonnees coordonneesArret = pair.second;
+            unsigned int poids = getPoidsEntre2Coord(vitesseDeMarche, distanceMaxMarche, p_pointDestination,
+                                                     coordonneesArret);
+
+            m_leGraphe.ajouterArc(idArcOrigine, idArcDestination, poids);
+            m_sommetsVersDestination.push_back(idArcOrigine);
+        }
+        m_nbArcsStationsVersDestination = m_sommetsVersDestination.size();
+
+        m_origine_dest_ajoute = true;
+    } catch (exception &ex) {
+        throw logic_error(ex.what());
+    }
+}
+
+//! \brief Remet ReseauGTFS dans l'était qu'il était avant l'exécution de
+//! ReseauGTFS::ajouterArcsOrigineDestination() \param[in] p_gtfs: un objet
+//! DonneesGTFS \throws logic_error si une incohérence est détecté lors de la
+//! modification du graphe \post Enlève de ReaseauGTFS tous les arcs allant du
+//! point source vers un arrêt de station et ceux allant d'un arrêt de station
+//! vers la destination \post assigne la variable m_origine_dest_ajoute à false
+//! (les points orignine et destination sont enlevés du graphe) \post enlève les
+//! données de m_sommetsVersDestination
+void ReseauGTFS::enleverArcsOrigineDestination() {
+    try {
+        for (size_t i : m_sommetsVersDestination) {
+            m_leGraphe.enleverArc(i, m_sommetDestination);
+        }
+
+        m_leGraphe.resize(m_leGraphe.getNbSommets() - 2);
+
+        Arret::Ptr arretOrigine = m_arretDuSommet[m_sommetOrigine];
+        Arret::Ptr arretDestination = m_arretDuSommet[m_sommetDestination];
+        m_sommetDeArret.erase(arretOrigine);
+        m_sommetDeArret.erase(arretDestination);
+        m_arretDuSommet.resize(m_arretDuSommet.size() - 2);
+
+        m_nbArcsStationsVersDestination = 0;
+        m_nbArcsOrigineVersStations = 0;
+        m_origine_dest_ajoute = false;
+
+    } catch (exception &ex) {
+        throw logic_error(ex.what());
+    }
+}

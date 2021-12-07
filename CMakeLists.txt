@@ -16,10 +16,12 @@ set(SOURCE_FILES
     station.cpp
     voyage.cpp
     DonneesGTFS.cpp
-    grapheBuilder.cpp)
+    dataReader.cpp)
 
-add_library(rtc STATIC ${SOURCE_FILES})
+add_library(rtc-reader STATIC ${SOURCE_FILES})
+add_library(rtc-network STATIC ReseauGTFS.cpp grapheBuilder.cpp)
+add_library(rtc-graphe STATIC graphe.cpp)
 #add_library(TP1 SHARED ${SOURCE_FILES})
 
 add_executable(main main.cpp)
-target_link_libraries(main rtc)
+target_link_libraries(main rtc-network rtc-graphe rtc-reader)

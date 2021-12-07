@@ -14,3 +14,6 @@ RTC-9juil-27nov/
 .DS_Store
 .idea/
 .vscode/
+build/
+
+*.a
