@@ -12,7 +12,7 @@ using namespace std;
 int main()
 {
 
-    const std::string chemin_dossier = "RTC-9juil-27nov";
+    const std::string chemin_dossier = "data";
 
     Date today(2020, 9, 25);
     Heure now1(7, 30, 0);
