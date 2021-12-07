@@ -3,7 +3,7 @@
 //
 
 #include <iostream>
-#include <ctime>
+#include <random>
 
 #include "DonneesGTFS.h"
 #include "ReseauGTFS.h"
@@ -12,17 +12,15 @@ using namespace std;
 
 int main()
 {
-    const std::string chemin_dossier = "RTC-9juil-27nov";
+    const std::string chemin_dossier = "data";
     Date today(2020, 9, 25);
     Heure now1(7, 30, 0);
 //    Date today; //Le constructeur par défaut initialise la date à aujourd'hui
 //    Heure now1; //Le constructeur par défaut initialise l'heure à maintenant
-
     Heure now2 = now1.add_secondes(72000); //on désire obtenir tous les arrêts du reste de la journée
 
     clock_t begin = clock();
     DonneesGTFS donnees_rtc(today, now1, now2);
-
     donnees_rtc.ajouterLignes(chemin_dossier + "/routes.txt");
     cout << "Nombre de lignes = " << donnees_rtc.getNbLignes() << endl;
     donnees_rtc.ajouterStations(chemin_dossier + "/stops.txt");
@@ -30,81 +28,96 @@ int main()
     donnees_rtc.ajouterServices(chemin_dossier + "/calendar_dates.txt");
     size_t nb_services = donnees_rtc.getNbServices();
     cout << "Nombre de services = " << nb_services << endl;
-    if (nb_services==0) throw logic_error("main(): On doit avoir nb_services > 0 pour continuer");
+    if (nb_services == 0) throw logic_error("main(): On doit avoir nb_services > 0 pour continuer");
     donnees_rtc.ajouterVoyagesDeLaDate(chemin_dossier + "/trips.txt");
     donnees_rtc.ajouterArretsDesVoyagesDeLaDate(chemin_dossier + "/stop_times.txt");
     donnees_rtc.ajouterTransferts(chemin_dossier + "/transfers.txt");
-
     clock_t end = clock();
     cout << "Chargement des données effectué en " << double(end - begin) / CLOCKS_PER_SEC << " secondes" << endl;
-
     cout << "Nombre de stations ayant au moins 1 arrêt = " << donnees_rtc.getNbStations() << endl;
     cout << "Nombre de transferts = " << donnees_rtc.getNbTransferts() << endl;
     cout << "Nombres de voyages = " << donnees_rtc.getNbVoyages() << endl;
     cout << "Nombre d'arrêts = " << donnees_rtc.getNbArrets() << endl;
-
     begin = clock();
     ReseauGTFS reseau_rtc(donnees_rtc);
     end = clock();
     cout << "Le nombre d'arcs (sans le point origine et destination) est = " << reseau_rtc.getNbArcs() << endl;
-    cout << "Graphe (sans le point origine et destination) a été produit en " << double(end - begin) / CLOCKS_PER_SEC << " secondes" << endl;
+    cout << "Graphe (sans le point source et destination) a été produit en " << double(end - begin) / CLOCKS_PER_SEC
+         << " secondes" << endl << endl;
 
-    cout << endl;
-    cout << "=============================================" << endl;
-    cout << "                  premier cas                " << endl;
-    cout << "=============================================" << endl;
-    cout << endl;
+    cout << "==========================================" << endl;
+    cout << "           début de la simulation         " << endl;
+    cout << "==========================================" << endl << endl;
 
-//    Coordonnees pointOrigine(46.758029, -71.336759); //Int. Chemin ste-Foy et Quatre-Bourgeois
-//    Coordonnees pointDestination(46.829049, -71.248305); //Centre Videotron
-    Coordonnees pointOrigine(46.7962, -71.3139);
-    Coordonnees pointDestination(46.8599, -71.3984);
+    //placement des stations_id dans un vector pour une meilleure sélection aléatoire
+    vector<unsigned int> station_ids;
+    const auto &stations = donnees_rtc.getStations();
+    for (const auto &station : stations)
+    {
+        station_ids.push_back(station.first);
+    }
 
+    std::default_random_engine generator;
+    std::uniform_int_distribution<unsigned int> distribution(0, (unsigned int) (station_ids.size() -
+                                                                                1)); //range of numbers
+    for (int i = 1; i <= 653; ++i) //réchauffement du générateur de nombres aléatoires
+    {
+        distribution(generator);
+    }
 
-    cout << "Coordonnées GPS du point d'origine: " << pointOrigine << endl;
-    cout << "Coordonnées GPS du point de destination: " << pointDestination << endl;
-    begin = clock();
-    reseau_rtc.ajouterArcsOrigineDestination(donnees_rtc, pointOrigine, pointDestination);
-    end = clock();
-    cout << "Nombre d'arcs ajoutés du point origine vers une station = " << reseau_rtc.getNbArcsOrigineVersStations() << endl;
-    cout << "Nombre d'arcs ajoutés d'une station vers le point destination = " << reseau_rtc.getNbArcsStationsVersDestination() << endl;
-    cout << "Cet ajout au graphe a nécessité un temps d'exécution de " << double(end - begin) / CLOCKS_PER_SEC << " secondes" << endl;
+    bool afficherItineraire = true;
+    const unsigned int nbDeTests = 10; //nombre de tests à effectuer
+    long moy_tempsExecution = 0;
 
-    long tempsExecution(0);
-    reseau_rtc.itineraire(donnees_rtc, true, tempsExecution);
-    cout << endl << "Temps d'exécution de l'algorithme de plus court chemin: " << tempsExecution
-         << " microsecondes" << endl;
+    unsigned int nbDeTestsComptabilises = 0;
+    //on comptabilise un test seulement si la destination est atteignable et différente de l'origine
+    for (unsigned int i = 0; i < nbDeTests; ++i)
+    {
+        cout << endl << "Test numéro " << i << endl;
+        unsigned int temp = distribution(generator);  // generates number in specified range above
+        unsigned int stationIdOrigine = station_ids.at(temp);
+        unsigned int stationIdDestination = stationIdOrigine;
+        Coordonnees pointOrigine = stations.at(stationIdOrigine).getCoords();
+        Coordonnees pointDestination = pointOrigine;
 
-    cout << endl;
-    cout << "=============================================" << endl;
-    cout << "                  deuxième cas               " << endl;
-    cout << "=============================================" << endl;
-    cout << endl;
+        while (stationIdOrigine == stationIdDestination ||
+               pointOrigine - pointDestination <= 2.1 * reseau_rtc.getDistMaxMarche())
+        {
+            temp = distribution(generator);
+            stationIdDestination = station_ids.at(temp);
+            pointDestination = stations.at(stationIdDestination).getCoords();
+        }
 
-    cout << "Suppression du graphe connecté aux points source et destination" << endl;
-    begin = clock();
-    reseau_rtc.enleverArcsOrigineDestination();
-    end = clock();
-    cout << "Cette suppression a nécessité un temps d'exécution de " << double(end - begin) / CLOCKS_PER_SEC << " secondes" << endl;
+        cout << "station du point origine = " << stations.at(stationIdOrigine) << endl;
+        cout << "station du point destination = " << stations.at(stationIdDestination) << endl;
+        cout << "distance = " << pointOrigine - pointDestination << " kilomètres" << endl;
 
-//    Coordonnees pointOrigine2(46.829049, -71.248305); //Centre vidéotron
-//    Coordonnees pointDestination2(46.758029, -71.336759); //Int. Chemin ste-Foy et Quatre-Bourgeois
-    Coordonnees pointOrigine2(46.8599, -71.3984);
-    Coordonnees pointDestination2(46.7962, -71.3139);
+        reseau_rtc.ajouterArcsOrigineDestination(donnees_rtc, pointOrigine, pointDestination);
 
-    cout << "Coordonnées GPS du point d'origine: " << pointOrigine2 << endl;
-    cout << "Coordonnées GPS du point de destination: " << pointDestination2 << endl;
-    begin = clock();
-    reseau_rtc.ajouterArcsOrigineDestination(donnees_rtc, pointOrigine2, pointDestination2);
-    end = clock();
-    cout << "Nombre d'arcs ajoutés du point origine vers une station = " << reseau_rtc.getNbArcsOrigineVersStations() << endl;
-    cout << "Nombre d'arcs ajoutés d'une station vers le point destination = " << reseau_rtc.getNbArcsStationsVersDestination() << endl;
-    cout << "Cet ajout au graphe a nécessité un temps d'exécution de " << double(end - begin) / CLOCKS_PER_SEC << " secondes" << endl;
+        long tempsExecution(0);
+        unsigned int tempsDuTrajet = reseau_rtc.itineraire(donnees_rtc, afficherItineraire, tempsExecution);
+        if (tempsDuTrajet == numeric_limits<unsigned int>::max())
+        {
+            cout << "impossible d'atteindre la destination. On passe au test suivant." << endl;
+        }
+        else if (tempsDuTrajet == 0)
+        {
+            cout << "Temps de trajet nul. On passe au test suivant." << endl;
+        }
+        else
+        {
+            moy_tempsExecution += tempsExecution;
+            ++nbDeTestsComptabilises;
+            cout << "Temps d'exécution de l'algorithme de plus court chemin: " << tempsExecution
+                 << " microsecondes" << endl;
 
-    long tempsExecution2(0);
-    reseau_rtc.itineraire(donnees_rtc, true, tempsExecution2);
-    cout << endl << "Temps d'exécution de l'algorithme de plus court chemin: " << tempsExecution2
-         << " microsecondes" << endl;
+        }
+        reseau_rtc.enleverArcsOrigineDestination();
+
+    }
+
+    cout << endl << "La moyenne du temps d'exécution sur " << nbDeTests << " itinéraires est de "
+         << (double)moy_tempsExecution / (double)nbDeTestsComptabilises << " microsecondes" << endl;
 
     return 0;
 }
