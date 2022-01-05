@@ -3,6 +3,7 @@
 //  Classe pour graphes orientés pondérés (non négativement) avec listes d'adjacence
 //
 //  Mario Marchand automne 2016.
+//  Édité par Mathieu Boisvert à l'automne 2021
 //
 
 #include "graphe.h"
